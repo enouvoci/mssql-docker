@@ -1,4 +1,5 @@
-# The script sets the sa password and start the SQL Service 
+
+# The script sets the sa password and start the SQL Service
 # Also it attaches additional database from the disk
 # The format for attach_dbs
 
@@ -16,15 +17,15 @@ param(
 
 if($ACCEPT_EULA -ne "Y" -And $ACCEPT_EULA -ne "y")
 {
-	Write-Verbose "ERROR: You must accept the End User License Agreement before this container can start."
-	Write-Verbose "Set the environment variable ACCEPT_EULA to 'Y' if you accept the agreement."
+    Write-Verbose "ERROR: You must accept the End User License Agreement before this container can start."
+    Write-Verbose "Set the environment variable ACCEPT_EULA to 'Y' if you accept the agreement."
 
-    exit 1 
+    exit 1
 }
 
 # start the service
 Write-Verbose "Starting SQL Server"
-start-service MSSQL`$SQLEXPRESS
+start-service MSSQL`$DOCKERSQL
 
 if($sa_password -eq "_") {
     $secretPath = $env:sa_password_path
@@ -50,13 +51,13 @@ $dbs = $attach_dbs_cleaned | ConvertFrom-Json
 if ($null -ne $dbs -And $dbs.Length -gt 0)
 {
     Write-Verbose "Attaching $($dbs.Length) database(s)"
-	    
-    Foreach($db in $dbs) 
-    {            
+
+    Foreach($db in $dbs)
+    {
         $files = @();
         Foreach($file in $db.dbFiles)
         {
-            $files += "(FILENAME = N'$($file)')";           
+            $files += "(FILENAME = N'$($file)')";
         }
 
         $files = $files -join ","
@@ -67,12 +68,42 @@ if ($null -ne $dbs -And $dbs.Length -gt 0)
     }
 }
 
+Write-Host "Automatically import data files in data volume"
+$sqlDataPath="C:\Sql\UserDbs"
+$sqlLogPath="C:\Sql\UserDbs"
+$fileNames = Get-ChildItem -Path $sqlDataPath -Recurse -Include *.mdf
+
+Foreach ($f in $fileNames){
+    # Write-Verbose $f.BaseName
+    # Set filename as DB name
+    $dbName = $f.BaseName
+    $mdfPath = "$sqlDataPath\$dbName" + ".mdf"
+    $ldfPath = "$sqlLogPath\$dbName" + "_log.ldf"
+
+    Write-Host $mdfPath
+    Write-Host $ldfPath
+    # attach data files if they exist:
+    if ((Test-Path $mdfPath) -eq $true) {
+        $sqlcmd = "IF DB_ID('$dbName') IS NULL BEGIN CREATE DATABASE $dbName ON (FILENAME = N'$mdfPath')"
+        if ((Test-Path $ldfPath) -eq $true) {
+            $sqlcmd = "$sqlcmd, (FILENAME = N'$ldfPath')"
+        }
+        $sqlcmd = "$sqlcmd FOR ATTACH; END"
+        Write-Verbose 'Data files exist - will attach and upgrade database'
+        # Write-Verbose $sqlcmd
+        Invoke-Sqlcmd -Query $sqlcmd
+    }
+    else {
+        Write-Verbose 'No data files'
+    }
+}
+
 Write-Verbose "Started SQL Server."
 
-$lastCheck = (Get-Date).AddSeconds(-2) 
-while ($true) 
-{ 
-    Get-EventLog -LogName Application -Source "MSSQL*" -After $lastCheck | Select-Object TimeGenerated, EntryType, Message	 
-    $lastCheck = Get-Date 
-    Start-Sleep -Seconds 2 
+$lastCheck = (Get-Date).AddSeconds(-2)
+while ($true)
+{
+    Get-EventLog -LogName Application -Source "MSSQL*" -After $lastCheck | Select-Object TimeGenerated, EntryType, Message
+    $lastCheck = Get-Date
+    Start-Sleep -Seconds 2
 }
